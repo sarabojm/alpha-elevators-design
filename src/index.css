@@ -703,10 +703,7 @@ button {
 
 @media (max-width: 1200px) {
   .main {
-    grid-template-columns:
-      280px
-      minmax(350px, 1fr)
-      350px;
+    grid-template-columns: 280px minmax(350px, 1fr) 350px;
   }
 
   .product-nav {
@@ -715,8 +712,62 @@ button {
 }
 
 @media (max-width: 850px) {
+  html,
+  body,
+  #root {
+    width: 100%;
+    min-width: 0;
+    height: 100%;
+    overflow: hidden;
+  }
+
+  .app {
+    width: 100%;
+    height: 100dvh;
+    min-height: 100dvh;
+  }
+
+  .topbar {
+    height: auto;
+    min-height: 64px;
+    padding: 10px 14px;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+
+  .brand {
+    width: auto;
+    flex: 1;
+  }
+
+  .brand-mark {
+    font-size: 30px;
+  }
+
+  .brand-name {
+    font-size: 16px;
+    letter-spacing: 1.5px;
+  }
+
+  .header-actions {
+    gap: 5px;
+  }
+
+  .header-icon {
+    height: 36px;
+    padding: 0 9px;
+    font-size: 9px;
+  }
+
+  .price-button {
+    display: none;
+  }
+
   .main {
-    display: block;
+    height: calc(100dvh - 64px);
+    display: flex;
+    flex-direction: column;
+    gap: 0;
   }
 
   .left-panel {
@@ -724,20 +775,234 @@ button {
   }
 
   .viewer {
+    order: 1;
+    width: 100%;
+    height: 52dvh;
+    min-height: 320px;
+    flex: 0 0 52dvh;
+  }
+
+  .three-container {
     width: 100%;
     height: 100%;
+    touch-action: none;
+  }
+
+  .viewer-top {
+    top: 14px;
+    left: 14px;
+    right: 14px;
+    font-size: 8px;
+    letter-spacing: 1px;
+  }
+
+  .viewer-hint {
+    bottom: 12px;
+    max-width: calc(100% - 28px);
+    font-size: 8px;
+    letter-spacing: 1px;
+  }
+
+  .viewer-hint span {
+    margin: 0 5px;
+  }
+
+  .camera-presets {
+    position: absolute;
+    left: 10px;
+    right: 10px;
+    bottom: 38px;
+    display: flex;
+    gap: 6px;
+    overflow-x: auto;
+    padding: 2px 0 4px;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .camera-presets::-webkit-scrollbar {
+    display: none;
+  }
+
+  .camera-presets button {
+    flex: 0 0 auto;
+    min-height: 36px;
+    padding: 8px 11px;
+    white-space: nowrap;
+  }
+
+  .dimension-overlay {
+    left: 10px;
+    right: 10px;
+    bottom: 76px;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 5px;
+  }
+
+  .dimension-overlay div {
+    min-width: 0;
+    padding: 7px 5px;
+    font-size: 7px;
+  }
+
+  .dimension-overlay strong {
+    font-size: 10px;
   }
 
   .config-panel {
-    position: absolute;
-    top: 82px;
-    right: 0;
-    width: 340px;
-    height: calc(100vh - 82px);
-    z-index: 10;
+    order: 2;
+    position: relative;
+    top: auto;
+    right: auto;
+    width: 100%;
+    height: calc(48dvh - 0px);
+    max-height: none;
+    overflow-y: auto;
+    overflow-x: hidden;
+    padding: 14px 14px 80px;
+    border-left: none;
+    border-top: 1px solid #292725;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .config-title {
+    position: sticky;
+    top: -14px;
+    z-index: 5;
+    margin: -14px 0 12px;
+    padding: 14px 0 10px;
+    background: #090909;
+  }
+
+  .config-title h2 {
+    font-size: 17px;
+  }
+
+  .accordion {
+    margin-bottom: 8px;
+  }
+
+  .accordion-header {
+    min-height: 52px;
+    height: 52px;
+    padding: 0 12px;
+  }
+
+  .accordion-content {
+    padding: 14px 12px 18px;
+  }
+
+  .accordion-content label {
+    margin-top: 10px;
+  }
+
+  .floor-buttons {
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .floor-buttons button {
+    min-height: 42px;
+    height: 42px;
+  }
+
+  .range-line {
+    gap: 10px;
+  }
+
+  .range-line input {
+    min-width: 0;
+  }
+
+  .number-input {
+    width: 100%;
+    height: 42px;
+  }
+
+  .number-input input {
+    font-size: 16px;
+  }
+
+  .color-options {
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .color-dot {
+    width: 38px;
+    height: 38px;
+  }
+
+  .choice-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px;
+  }
+
+  .choice {
+    min-height: 42px;
+  }
+
+  .wide-option {
+    height: 42px;
+  }
+
+  .simple-option {
+    height: 50px;
   }
 
   .bottom-bar {
     display: none;
   }
 }
+
+@media (max-width: 480px) {
+  .topbar {
+    padding: 9px 10px;
+  }
+
+  .brand-mark {
+    font-size: 27px;
+  }
+
+  .brand-name {
+    font-size: 14px;
+  }
+
+  .header-icon {
+    height: 34px;
+    padding: 0 7px;
+    font-size: 8px;
+  }
+
+  .viewer {
+    height: 48dvh;
+    min-height: 285px;
+    flex-basis: 48dvh;
+  }
+
+  .config-panel {
+    height: 52dvh;
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  .camera-presets button {
+    min-height: 34px;
+    padding: 7px 9px;
+    font-size: 8px;
+  }
+
+  .dimension-overlay {
+    bottom: 72px;
+  }
+
+  .dimension-overlay div {
+    padding: 6px 4px;
+  }
+
+  .dimension-overlay strong {
+    font-size: 9px;
+  }
+}
+

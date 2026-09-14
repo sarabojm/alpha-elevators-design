@@ -1778,9 +1778,15 @@ function App() {
         size.z
       );
 
-    const distance =
+    // const distance =
+    //   Math.max(
+    //     maxSize * 2.2,
+    //     6
+    //   );
+
+     const distance =
       Math.max(
-        maxSize * 2.2,
+        maxSize * 1.1,
         6
       );
 
@@ -3210,18 +3216,14 @@ function fitCamera(
       new THREE.Vector3()
     );
 
-  const max =
-    Math.max(
-      size.x,
-      size.y,
-      size.z
-    );
+  // const max =
+  //   Math.max(
+  //     size.x,
+  //     size.y,
+  //     size.z
+  //   );
 
-  const distance =
-    Math.max(
-      max * 2.2,
-      6
-    );
+ const distance = Math.max(size.x, size.y, size.z) * 1.3;
 
   camera.position.set(
     distance,

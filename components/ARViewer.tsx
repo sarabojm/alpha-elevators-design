@@ -14,17 +14,24 @@ export default function ARViewer({
 }: ARViewerProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
-  const [isSupported, setIsSupported] = useState<
-    boolean | null
-  >(null);
+  const [isSupported, setIsSupported] =
+    useState<boolean | null>(null);
 
-  const [isPlaced, setIsPlaced] = useState(false);
+  const [isPlaced, setIsPlaced] =
+    useState(false);
 
   const [message, setMessage] = useState(
-    "Move your phone slowly to detect the floor."
+    "Move your phone slowly over the floor."
   );
 
   const [error, setError] = useState("");
+
+  // Keep latest placed state available inside animation loop
+  const isPlacedRef = useRef(false);
+
+  useEffect(() => {
+    isPlacedRef.current = isPlaced;
+  }, [isPlaced]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -43,32 +50,110 @@ export default function ARViewer({
     let arButton: HTMLElement | null = null;
 
     let xrSession: XRSession | null = null;
+
     let hitTestSource: XRHitTestSource | null = null;
-    let viewerSpace: XRReferenceSpace | null = null;
+    let hitTestSourceRequested = false;
 
     let cancelled = false;
-    let cleanup: (() => void) | undefined;
 
-    // =====================================================
-    // INITIALIZE AR
-    // =====================================================
+    // --------------------------------------------------
+    // SELECT / TAP
+    // --------------------------------------------------
 
-    const initialize = async () => {
+    const handleSelect = () => {
+      if (!renderer) {
+        return;
+      }
+
+      if (!renderer.xr.isPresenting) {
+        return;
+      }
+
+      // No surface detected
+      if (!reticle || !reticle.visible) {
+        setMessage(
+          "Move your phone until the white circle appears."
+        );
+
+        return;
+      }
+
+      // Elevator not loaded
+      if (!elevator) {
+        setMessage(
+          "Elevator model is still loading."
+        );
+
+        return;
+      }
+
+      // ----------------------------------------------
+      // Get reticle position
+      // ----------------------------------------------
+
+      const position = new THREE.Vector3();
+
+      const quaternion =
+        new THREE.Quaternion();
+
+      const scale = new THREE.Vector3();
+
+      reticle.matrix.decompose(
+        position,
+        quaternion,
+        scale
+      );
+
+      // ----------------------------------------------
+      // Place elevator
+      // ----------------------------------------------
+
+      elevator.position.copy(position);
+
+      // Keep elevator upright
+      elevator.rotation.set(
+        0,
+        0,
+        0
+      );
+
+      elevator.visible = true;
+
+      isPlacedRef.current = true;
+
+      setIsPlaced(true);
+
+      setMessage(
+        "Elevator placed successfully."
+      );
+
+      console.log(
+        "Elevator placed at:",
+        position
+      );
+    };
+
+    // --------------------------------------------------
+    // INITIALIZE
+    // --------------------------------------------------
+
+    const initialize = async (): Promise<
+      (() => void) | undefined
+    > => {
       try {
-        // -------------------------------------------------
-        // CHECK WEBXR
-        // -------------------------------------------------
+        // ----------------------------------------------
+        // WEBXR CHECK
+        // ----------------------------------------------
 
-        const xr =
-          "xr" in navigator
-            ? navigator.xr
-            : undefined;
+        const xr = navigator.xr;
 
         if (!xr) {
           setIsSupported(false);
+
           setError(
             "WebXR is not available in this browser."
           );
+
           return;
         }
 
@@ -85,39 +170,42 @@ export default function ARViewer({
 
         if (!supported) {
           setError(
-            "Immersive AR is not supported on this device/browser."
+            "Immersive AR is not supported on this device."
           );
+
           return;
         }
 
-        // -------------------------------------------------
+        // ----------------------------------------------
         // SCENE
-        // -------------------------------------------------
+        // ----------------------------------------------
 
         scene = new THREE.Scene();
 
-        // -------------------------------------------------
+        // ----------------------------------------------
         // CAMERA
-        // -------------------------------------------------
+        // ----------------------------------------------
 
-        camera = new THREE.PerspectiveCamera(
-          70,
-          window.innerWidth /
-            window.innerHeight,
-          0.01,
-          100
-        );
+        camera =
+          new THREE.PerspectiveCamera(
+            70,
+            window.innerWidth /
+              window.innerHeight,
+            0.01,
+            100
+          );
 
-        // -------------------------------------------------
+        // ----------------------------------------------
         // RENDERER
-        // -------------------------------------------------
+        // ----------------------------------------------
 
-        renderer = new THREE.WebGLRenderer({
-          antialias: true,
-          alpha: true,
-          powerPreference:
-            "high-performance",
-        });
+        renderer =
+          new THREE.WebGLRenderer({
+            antialias: true,
+            alpha: true,
+            powerPreference:
+              "high-performance",
+          });
 
         renderer.setPixelRatio(
           Math.min(
@@ -131,21 +219,30 @@ export default function ARViewer({
           window.innerHeight
         );
 
-        renderer.xr.enabled = true;
-
-        renderer.xr.setReferenceSpaceType(
-          "local-floor"
+        renderer.setClearColor(
+          0x000000,
+          0
         );
 
-        renderer.setClearAlpha(0);
+        renderer.xr.enabled = true;
+
+        /*
+         * IMPORTANT
+         *
+         * Do NOT use:
+         *
+         * renderer.xr.setReferenceSpaceType(
+         *   "local-floor"
+         * );
+         */
 
         container.appendChild(
           renderer.domElement
         );
 
-        // -------------------------------------------------
-        // LIGHTING
-        // -------------------------------------------------
+        // ----------------------------------------------
+        // LIGHTS
+        // ----------------------------------------------
 
         const hemisphereLight =
           new THREE.HemisphereLight(
@@ -154,7 +251,9 @@ export default function ARViewer({
             2
           );
 
-        scene.add(hemisphereLight);
+        scene.add(
+          hemisphereLight
+        );
 
         const directionalLight =
           new THREE.DirectionalLight(
@@ -172,16 +271,20 @@ export default function ARViewer({
           directionalLight
         );
 
-        // -------------------------------------------------
+        // ----------------------------------------------
         // RETICLE
-        // -------------------------------------------------
+        // ----------------------------------------------
 
         const reticleGeometry =
           new THREE.RingGeometry(
             0.08,
-            0.11,
+            0.1,
             32
           );
+
+        reticleGeometry.rotateX(
+          -Math.PI / 2
+        );
 
         const reticleMaterial =
           new THREE.MeshBasicMaterial({
@@ -197,8 +300,7 @@ export default function ARViewer({
           reticleMaterial
         );
 
-        reticle.matrixAutoUpdate =
-          false;
+        reticle.matrixAutoUpdate = false;
 
         reticle.visible = false;
 
@@ -206,25 +308,29 @@ export default function ARViewer({
 
         scene.add(reticle);
 
-        // -------------------------------------------------
+        // ----------------------------------------------
         // LOAD ELEVATOR GLB
-        // -------------------------------------------------
+        // ----------------------------------------------
 
-        const loader = new GLTFLoader();
+        const loader =
+          new GLTFLoader();
 
         loader.load(
           modelUrl,
 
           (gltf) => {
-            if (cancelled) {
+            if (
+              cancelled ||
+              !scene
+            ) {
               return;
             }
 
             elevator = gltf.scene;
 
-            // ---------------------------------------------
-            // ORIGINAL MODEL SIZE
-            // ---------------------------------------------
+            // ------------------------------------------
+            // ORIGINAL SIZE
+            // ------------------------------------------
 
             const originalBox =
               new THREE.Box3().setFromObject(
@@ -243,12 +349,9 @@ export default function ARViewer({
               originalSize
             );
 
-            // ---------------------------------------------
-            // AR MODEL HEIGHT
-            // ---------------------------------------------
-
-            // WebXR uses meters.
-            // Target elevator height = 2.5 meters.
+            // ------------------------------------------
+            // TARGET HEIGHT
+            // ------------------------------------------
 
             const targetHeight = 2.5;
 
@@ -264,9 +367,9 @@ export default function ARViewer({
               );
             }
 
-            // ---------------------------------------------
+            // ------------------------------------------
             // CENTER MODEL
-            // ---------------------------------------------
+            // ------------------------------------------
 
             const scaledBox =
               new THREE.Box3().setFromObject(
@@ -276,7 +379,9 @@ export default function ARViewer({
             const center =
               new THREE.Vector3();
 
-            scaledBox.getCenter(center);
+            scaledBox.getCenter(
+              center
+            );
 
             elevator.position.x -=
               center.x;
@@ -284,9 +389,9 @@ export default function ARViewer({
             elevator.position.z -=
               center.z;
 
-            // ---------------------------------------------
-            // PLACE BOTTOM ON FLOOR
-            // ---------------------------------------------
+            // ------------------------------------------
+            // BOTTOM TO FLOOR
+            // ------------------------------------------
 
             const finalBox =
               new THREE.Box3().setFromObject(
@@ -296,16 +401,13 @@ export default function ARViewer({
             elevator.position.y -=
               finalBox.min.y;
 
-            // ---------------------------------------------
-            // HIDE UNTIL PLACED
-            // ---------------------------------------------
-
+            // Initially hidden
             elevator.visible = false;
 
-            scene?.add(elevator);
+            scene.add(elevator);
 
             console.log(
-              "Elevator model loaded"
+              "Elevator model loaded."
             );
           },
 
@@ -323,9 +425,9 @@ export default function ARViewer({
           }
         );
 
-        // -------------------------------------------------
+        // ----------------------------------------------
         // AR BUTTON
-        // -------------------------------------------------
+        // ----------------------------------------------
 
         arButton =
           ARButton.createButton(
@@ -336,15 +438,16 @@ export default function ARViewer({
               ],
 
               optionalFeatures: [
-                "local-floor",
                 "dom-overlay",
               ],
+
+              domOverlay: {
+                root: container,
+              },
             }
           );
 
-        // -------------------------------------------------
-        // AR BUTTON STYLE
-        // -------------------------------------------------
+        // Button style
 
         arButton.style.position =
           "absolute";
@@ -359,25 +462,25 @@ export default function ARViewer({
           "translateX(-50%)";
 
         arButton.style.zIndex =
-          "1000";
+          "3000";
 
         arButton.style.padding =
           "14px 28px";
 
         arButton.style.border =
-          "1px solid white";
+          "1px solid rgba(255,255,255,0.7)";
 
         arButton.style.borderRadius =
-          "8px";
+          "10px";
 
         arButton.style.background =
           "rgba(0,0,0,0.75)";
 
         arButton.style.color =
-          "white";
+          "#ffffff";
 
         arButton.style.fontSize =
-          "14px";
+          "15px";
 
         arButton.style.fontFamily =
           "Arial, sans-serif";
@@ -386,90 +489,43 @@ export default function ARViewer({
           arButton
         );
 
-        // =================================================
-        // XR SESSION START
-        // =================================================
+        // ----------------------------------------------
+        // SESSION START
+        // ----------------------------------------------
 
         const handleSessionStart =
-          async () => {
+          () => {
             console.log(
-              "XR session started"
+              "XR session started."
             );
 
             xrSession =
               renderer?.xr.getSession() ??
               null;
 
-            if (!xrSession) {
-              console.error(
-                "XR session not available"
-              );
-              return;
-            }
+            hitTestSource = null;
 
-            try {
-              // -------------------------------------------
-              // VIEWER SPACE
-              // -------------------------------------------
+            hitTestSourceRequested =
+              false;
 
-              viewerSpace =
-                await xrSession.requestReferenceSpace(
-                  "viewer"
-                );
+            isPlacedRef.current =
+              false;
 
-              console.log(
-                "Viewer reference space created"
-              );
+            setIsPlaced(false);
 
-              // -------------------------------------------
-              // CHECK HIT TEST API
-              // -------------------------------------------
+            setMessage(
+              "Move your phone slowly over the floor."
+            );
 
-              if (
-                typeof xrSession.requestHitTestSource !==
-                "function"
-              ) {
-                throw new Error(
-                  "WebXR hit-test is not supported."
-                );
-              }
+            // ------------------------------------------
+            // IMPORTANT
+            // SELECT EVENT IS ON XRSession
+            // ------------------------------------------
 
-              // -------------------------------------------
-              // CREATE HIT TEST SOURCE
-              // -------------------------------------------
-
-              const requestedHitTestSource =
-                await xrSession.requestHitTestSource(
-                  {
-                    space: viewerSpace,
-                  }
-                );
-
-              hitTestSource =
-                requestedHitTestSource ??
-                null;
-
-              if (hitTestSource) {
-                console.log(
-                  "Hit test source created"
-                );
-
-                setMessage(
-                  "Move your phone slowly over the floor."
-                );
-              } else {
-                throw new Error(
-                  "Unable to create hit-test source."
-                );
-              }
-            } catch (sessionError) {
-              console.error(
-                "Hit test initialization failed:",
-                sessionError
-              );
-
-              setError(
-                "Unable to start surface detection."
+            if (xrSession) {
+              xrSession.addEventListener(
+                "select",
+                handleSelect
               );
             }
           };
@@ -479,35 +535,57 @@ export default function ARViewer({
           handleSessionStart
         );
 
-        // =================================================
-        // XR SESSION END
-        // =================================================
+        // ----------------------------------------------
+        // SESSION END
+        // ----------------------------------------------
 
         const handleSessionEnd =
           () => {
             console.log(
-              "XR session ended"
+              "XR session ended."
             );
 
-            if (hitTestSource) {
+            // Remove select listener
+            if (xrSession) {
+              xrSession.removeEventListener(
+                "select",
+                handleSelect
+              );
+            }
+
+            // Cancel hit test
+            if (
+              hitTestSource
+            ) {
               hitTestSource.cancel();
             }
 
             hitTestSource = null;
 
-            viewerSpace = null;
+            hitTestSourceRequested =
+              false;
 
             xrSession = null;
 
+            // Hide reticle
+            if (reticle) {
+              reticle.visible =
+                false;
+            }
+
+            // Hide elevator
             if (elevator) {
               elevator.visible =
                 false;
             }
 
+            isPlacedRef.current =
+              false;
+
             setIsPlaced(false);
 
             setMessage(
-              "Move your phone slowly to detect the floor."
+              "Move your phone slowly over the floor."
             );
           };
 
@@ -516,102 +594,9 @@ export default function ARViewer({
           handleSessionEnd
         );
 
-        // =================================================
-        // TAP TO PLACE
-        // =================================================
-
-        const handleTap = () => {
-          if (
-            !renderer ||
-            !renderer.xr.isPresenting
-          ) {
-            return;
-          }
-
-          if (!reticle) {
-            return;
-          }
-
-          if (!reticle.visible) {
-            console.log(
-              "No surface detected yet"
-            );
-
-            setMessage(
-              "Move your phone until the white circle appears."
-            );
-
-            return;
-          }
-
-          if (!elevator) {
-            console.log(
-              "Elevator model not loaded yet"
-            );
-
-            setMessage(
-              "Loading elevator model..."
-            );
-
-            return;
-          }
-
-          // ---------------------------------------------
-          // GET RETICLE TRANSFORM
-          // ---------------------------------------------
-
-          const position =
-            new THREE.Vector3();
-
-          const quaternion =
-            new THREE.Quaternion();
-
-          const scale =
-            new THREE.Vector3();
-
-          reticle.matrix.decompose(
-            position,
-            quaternion,
-            scale
-          );
-
-          // ---------------------------------------------
-          // PLACE ELEVATOR
-          // ---------------------------------------------
-
-          elevator.position.copy(
-            position
-          );
-
-          // Keep elevator upright.
-          elevator.rotation.set(
-            0,
-            0,
-            0
-          );
-
-          elevator.visible = true;
-
-          setIsPlaced(true);
-
-          setMessage(
-            "Elevator placed successfully."
-          );
-
-          console.log(
-            "Elevator placed at:",
-            position
-          );
-        };
-
-        renderer.domElement.addEventListener(
-          "click",
-          handleTap
-        );
-
-        // =================================================
-        // XR RENDER LOOP
-        // =================================================
+        // ----------------------------------------------
+        // ANIMATION LOOP
+        // ----------------------------------------------
 
         renderer.setAnimationLoop(
           (
@@ -626,29 +611,115 @@ export default function ARViewer({
               return;
             }
 
-            // ---------------------------------------------
-            // HIT TEST
-            // ---------------------------------------------
+            // ------------------------------------------
+            // XR FRAME
+            // ------------------------------------------
 
             if (
               frame &&
-              hitTestSource &&
               renderer.xr.isPresenting
             ) {
               const referenceSpace =
                 renderer.xr.getReferenceSpace();
 
-              if (referenceSpace) {
-                const hitTestResults =
+              const session =
+                renderer.xr.getSession();
+
+              // ----------------------------------------
+              // REQUEST HIT TEST SOURCE
+              // ----------------------------------------
+
+              if (
+                !hitTestSourceRequested &&
+                session
+              ) {
+                hitTestSourceRequested =
+                  true;
+
+                void (async () => {
+                  try {
+                    const viewerSpace =
+                      await session.requestReferenceSpace(
+                        "viewer"
+                      );
+
+                    // Type-safe check
+                    if (
+                      typeof session.requestHitTestSource !==
+                      "function"
+                    ) {
+                      console.error(
+                        "requestHitTestSource is not supported."
+                      );
+
+                      setError(
+                        "Hit-test is not supported by this AR session."
+                      );
+
+                      hitTestSourceRequested =
+                        false;
+
+                      return;
+                    }
+
+                    const source =
+                      await session.requestHitTestSource(
+                        {
+                          space:
+                            viewerSpace,
+                        }
+                      );
+
+                    if (
+                      cancelled
+                    ) {
+                      source?.cancel();
+
+                      return;
+                    }
+
+                    hitTestSource =
+                      source ?? null;
+
+                    console.log(
+                      "Hit test source created."
+                    );
+                  } catch (
+                    hitTestError
+                  ) {
+                    console.error(
+                      "Hit test source error:",
+                      hitTestError
+                    );
+
+                    hitTestSourceRequested =
+                      false;
+
+                    setError(
+                      "Unable to start surface detection."
+                    );
+                  }
+                })();
+              }
+
+              // ----------------------------------------
+              // HIT TEST
+              // ----------------------------------------
+
+              if (
+                hitTestSource &&
+                referenceSpace
+              ) {
+                const results =
                   frame.getHitTestResults(
                     hitTestSource
                   );
 
                 if (
-                  hitTestResults.length > 0
+                  results.length > 0
                 ) {
                   const hit =
-                    hitTestResults[0];
+                    results[0];
 
                   const pose =
                     hit.getPose(
@@ -665,19 +736,35 @@ export default function ARViewer({
                     reticle.matrix.fromArray(
                       pose.transform.matrix
                     );
+
+                    if (
+                      !isPlacedRef.current
+                    ) {
+                      setMessage(
+                        "Surface detected. Tap to place the elevator."
+                      );
+                    }
                   }
                 } else {
                   if (reticle) {
                     reticle.visible =
                       false;
                   }
+
+                  if (
+                    !isPlacedRef.current
+                  ) {
+                    setMessage(
+                      "Move your phone slowly over the floor."
+                    );
+                  }
                 }
               }
             }
 
-            // ---------------------------------------------
+            // ------------------------------------------
             // RENDER
-            // ---------------------------------------------
+            // ------------------------------------------
 
             renderer.render(
               scene,
@@ -686,9 +773,9 @@ export default function ARViewer({
           }
         );
 
-        // =================================================
+        // ----------------------------------------------
         // RESIZE
-        // =================================================
+        // ----------------------------------------------
 
         const handleResize =
           () => {
@@ -721,26 +808,17 @@ export default function ARViewer({
           handleResize
         );
 
-        // =================================================
+        // ----------------------------------------------
         // CLEANUP
-        // =================================================
+        // ----------------------------------------------
 
-        cleanup = () => {
+        return () => {
           cancelled = true;
 
           window.removeEventListener(
             "resize",
             handleResize
           );
-
-          renderer?.domElement.removeEventListener(
-            "click",
-            handleTap
-          );
-
-          // IMPORTANT:
-          // session events belong to renderer.xr,
-          // not renderer itself.
 
           renderer?.xr.removeEventListener(
             "sessionstart",
@@ -752,32 +830,41 @@ export default function ARViewer({
             handleSessionEnd
           );
 
-          if (hitTestSource) {
-            hitTestSource.cancel();
+          if (xrSession) {
+            xrSession.removeEventListener(
+              "select",
+              handleSelect
+            );
           }
 
-          hitTestSource = null;
+          if (
+            hitTestSource
+          ) {
+            hitTestSource.cancel();
+
+            hitTestSource =
+              null;
+          }
+
+          hitTestSourceRequested =
+            false;
 
           renderer?.setAnimationLoop(
             null
           );
 
-          // ---------------------------------------------
-          // END XR SESSION
-          // ---------------------------------------------
-
           if (
             xrSession &&
             renderer?.xr.isPresenting
           ) {
-            xrSession.end().catch(
-              () => {}
-            );
+            void xrSession
+              .end()
+              .catch(() => {});
           }
 
-          // ---------------------------------------------
+          // ------------------------------------------
           // DISPOSE ELEVATOR
-          // ---------------------------------------------
+          // ------------------------------------------
 
           if (elevator) {
             elevator.traverse(
@@ -799,15 +886,13 @@ export default function ARViewer({
                       mesh.material
                     )
                       ? mesh.material
-                      : [mesh.material];
+                      : [
+                          mesh.material,
+                        ];
 
                   materials.forEach(
                     (material) => {
                       material.dispose();
-
-                      // Material.map is not available
-                      // on the base Material type.
-                      // Narrow it safely.
 
                       const materialWithMap =
                         material as THREE.Material & {
@@ -818,9 +903,6 @@ export default function ARViewer({
                         materialWithMap.map
                       ) {
                         materialWithMap.map.dispose();
-
-                        materialWithMap.map =
-                          null;
                       }
                     }
                   );
@@ -829,75 +911,71 @@ export default function ARViewer({
             );
           }
 
-          // ---------------------------------------------
+          // ------------------------------------------
           // DISPOSE RETICLE
-          // ---------------------------------------------
+          // ------------------------------------------
 
           if (reticle) {
             reticle.geometry.dispose();
 
-            if (
+            const materials =
               Array.isArray(
                 reticle.material
               )
-            ) {
-              reticle.material.forEach(
-                (material) => {
-                  material.dispose();
-                }
-              );
-            } else {
-              reticle.material.dispose();
-            }
-          }
+                ? reticle.material
+                : [
+                    reticle.material,
+                  ];
 
-          // ---------------------------------------------
-          // DISPOSE RENDERER
-          // ---------------------------------------------
-
-          renderer?.dispose();
-
-          // ---------------------------------------------
-          // REMOVE RENDERER DOM
-          // ---------------------------------------------
-
-          if (
-            renderer?.domElement
-              .parentElement ===
-            container
-          ) {
-            container.removeChild(
-              renderer.domElement
+            materials.forEach(
+              (material) => {
+                material.dispose();
+              }
             );
+
+            reticle = null;
           }
 
-          // ---------------------------------------------
+          // ------------------------------------------
           // REMOVE AR BUTTON
-          // ---------------------------------------------
+          // ------------------------------------------
 
           if (
-            arButton?.parentElement ===
-            container
+            arButton &&
+            arButton.parentElement ===
+              container
           ) {
             container.removeChild(
               arButton
             );
           }
 
+          // ------------------------------------------
+          // REMOVE RENDERER
+          // ------------------------------------------
+
+          if (
+            renderer &&
+            renderer.domElement.parentElement ===
+              container
+          ) {
+            container.removeChild(
+              renderer.domElement
+            );
+          }
+
+          renderer?.dispose();
+
           renderer = null;
           scene = null;
           camera = null;
-          reticle = null;
           elevator = null;
           arButton = null;
-          xrSession = null;
-          viewerSpace = null;
-          hitTestSource = null;
         };
-      } catch (initializationError) {
+      } catch (initError) {
         console.error(
           "AR initialization error:",
-          initializationError
+          initError
         );
 
         setIsSupported(false);
@@ -905,14 +983,21 @@ export default function ARViewer({
         setError(
           "Unable to initialize AR."
         );
+
+        return;
       }
     };
 
-    initialize();
+    let cleanup:
+      | (() => void)
+      | undefined;
 
-    // =====================================================
-    // REACT CLEANUP
-    // =====================================================
+    void initialize().then(
+      (cleanupFunction) => {
+        cleanup =
+          cleanupFunction;
+      }
+    );
 
     return () => {
       cancelled = true;
@@ -923,17 +1008,17 @@ export default function ARViewer({
     };
   }, [modelUrl]);
 
-  // =======================================================
+  // --------------------------------------------------
   // EXIT
-  // =======================================================
+  // --------------------------------------------------
 
-  const handleExit = async () => {
+  const handleExit = () => {
     onExit?.();
   };
 
-  // =======================================================
+  // --------------------------------------------------
   // UI
-  // =======================================================
+  // --------------------------------------------------
 
   return (
     <div
@@ -949,9 +1034,9 @@ export default function ARViewer({
         touchAction: "none",
       }}
     >
-      {/* ================================================= */}
-      {/* INSTRUCTIONS */}
-      {/* ================================================= */}
+      {/* -------------------------------------------- */}
+      {/* INSTRUCTION */}
+      {/* -------------------------------------------- */}
 
       {isSupported &&
         !isPlaced &&
@@ -967,28 +1052,28 @@ export default function ARViewer({
                 "16px 18px",
               borderRadius: 16,
               background:
-                "rgba(0,0,0,0.78)",
+                "rgba(0,0,0,0.72)",
               color: "#fff",
               textAlign: "center",
               fontSize: 14,
               lineHeight: 1.5,
-              pointerEvents: "none",
+              pointerEvents:
+                "none",
               backdropFilter:
                 "blur(8px)",
             }}
           >
             Move your phone slowly
-            over the floor until the
-            white circle appears.
+            over the floor.
             <br />
-            Then tap the circle to
-            place the elevator.
+            When the white circle
+            appears, tap it.
           </div>
         )}
 
-      {/* ================================================= */}
+      {/* -------------------------------------------- */}
       {/* PLACED MESSAGE */}
-      {/* ================================================= */}
+      {/* -------------------------------------------- */}
 
       {isPlaced && (
         <div
@@ -1002,11 +1087,12 @@ export default function ARViewer({
               "12px 18px",
             borderRadius: 14,
             background:
-              "rgba(0,0,0,0.78)",
+              "rgba(0,0,0,0.72)",
             color: "#fff",
             textAlign: "center",
             fontSize: 14,
-            pointerEvents: "none",
+            pointerEvents:
+              "none",
           }}
         >
           Elevator placed
@@ -1014,9 +1100,9 @@ export default function ARViewer({
         </div>
       )}
 
-      {/* ================================================= */}
+      {/* -------------------------------------------- */}
       {/* ERROR */}
-      {/* ================================================= */}
+      {/* -------------------------------------------- */}
 
       {error && (
         <div
@@ -1044,9 +1130,9 @@ export default function ARViewer({
         </div>
       )}
 
-      {/* ================================================= */}
-      {/* EXIT */}
-      {/* ================================================= */}
+      {/* -------------------------------------------- */}
+      {/* EXIT BUTTON */}
+      {/* -------------------------------------------- */}
 
       <button
         type="button"
@@ -1071,9 +1157,9 @@ export default function ARViewer({
         EXIT
       </button>
 
-      {/* ================================================= */}
+      {/* -------------------------------------------- */}
       {/* STATUS */}
-      {/* ================================================= */}
+      {/* -------------------------------------------- */}
 
       {!error && (
         <div
@@ -1095,7 +1181,8 @@ export default function ARViewer({
             color: "#fff",
             textAlign: "center",
             fontSize: 12,
-            pointerEvents: "none",
+            pointerEvents:
+              "none",
           }}
         >
           {message}

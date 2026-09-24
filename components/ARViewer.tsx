@@ -3,25 +3,33 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import { ARButton } from "three/addons/webxr/ARButton.js";
 
-type ARViewerProps = {
+interface ARViewerProps {
   modelUrl?: string;
-};
+  onExit?: () => void;
+}
 
 export default function ARViewer({
   modelUrl = "/models/Elevator_Master.glb",
+  onExit,
 }: ARViewerProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
 
-  const [supported, setSupported] = useState<boolean | null>(null);
-  const [placed, setPlaced] = useState(false);
+  const [isSupported, setIsSupported] = useState<boolean | null>(
+    null
+  );
+
+  const [isPlaced, setIsPlaced] = useState(false);
+
+  const [message, setMessage] = useState(
+    "Move your phone slowly to detect the floor."
+  );
+
   const [error, setError] = useState("");
 
   useEffect(() => {
     const container = containerRef.current;
 
-    if (!container) {
-      return;
-    }
+    if (!container) return;
 
     let renderer: THREE.WebGLRenderer | null = null;
     let scene: THREE.Scene | null = null;
@@ -30,51 +38,58 @@ export default function ARViewer({
     let reticle: THREE.Mesh | null = null;
     let elevator: THREE.Group | null = null;
 
+    let arButton: HTMLElement | null = null;
+
+    // WebXR objects
+    let xrSession: XRSession | null = null;
     let hitTestSource: XRHitTestSource | null = null;
     let viewerSpace: XRReferenceSpace | null = null;
-    let xrSession: XRSession | null = null;
 
-    let handleResize: (() => void) | null = null;
-    let handleTap: (() => void) | null = null;
-    let handleSessionEnd: (() => void) | null = null;
+    let cancelled = false;
 
-    const initAR = async () => {
-      // ==========================================
-      // CHECK WEBXR
-      // ==========================================
+    // --------------------------------------------------
+    // Initialize
+    // --------------------------------------------------
 
-      if (!navigator.xr) {
-        setSupported(false);
-        setError(
-          "WebXR is not available in this browser."
-        );
-        return;
-      }
-
+    const initialize = async () => {
       try {
-        const isSupported =
-          await navigator.xr.isSessionSupported(
-            "immersive-ar"
-          );
+        // ----------------------------------------------
+        // Check WebXR
+        // ----------------------------------------------
 
-        setSupported(isSupported);
-
-        if (!isSupported) {
+        if (!("xr" in navigator)) {
+          setIsSupported(false);
           setError(
-            "Immersive AR is not supported on this device/browser."
+            "WebXR is not available in this browser."
           );
           return;
         }
 
-        // ==========================================
-        // SCENE
-        // ==========================================
+        const xr = navigator.xr;
+
+        const supported =
+          await xr.isSessionSupported("immersive-ar");
+
+        if (cancelled) return;
+
+        setIsSupported(supported);
+
+        if (!supported) {
+          setError(
+            "Immersive AR is not supported on this device."
+          );
+          return;
+        }
+
+        // ----------------------------------------------
+        // Scene
+        // ----------------------------------------------
 
         scene = new THREE.Scene();
 
-        // ==========================================
-        // CAMERA
-        // ==========================================
+        // ----------------------------------------------
+        // Camera
+        // ----------------------------------------------
 
         camera = new THREE.PerspectiveCamera(
           70,
@@ -83,13 +98,14 @@ export default function ARViewer({
           100
         );
 
-        // ==========================================
-        // RENDERER
-        // ==========================================
+        // ----------------------------------------------
+        // Renderer
+        // ----------------------------------------------
 
         renderer = new THREE.WebGLRenderer({
           antialias: true,
           alpha: true,
+          powerPreference: "high-performance",
         });
 
         renderer.setPixelRatio(
@@ -103,19 +119,25 @@ export default function ARViewer({
 
         renderer.xr.enabled = true;
 
+        // Important for AR
+        renderer.xr.setReferenceSpaceType(
+          "local-floor"
+        );
+
         renderer.setClearAlpha(0);
 
         container.appendChild(
           renderer.domElement
         );
 
-        // ==========================================
-        // LIGHTING
-        // ==========================================
+        // ----------------------------------------------
+        // Lights
+        // ----------------------------------------------
 
         const ambientLight =
-          new THREE.AmbientLight(
+          new THREE.HemisphereLight(
             0xffffff,
+            0x444444,
             2
           );
 
@@ -128,21 +150,21 @@ export default function ARViewer({
           );
 
         directionalLight.position.set(
-          5,
-          10,
-          5
+          3,
+          8,
+          4
         );
 
         scene.add(directionalLight);
 
-        // ==========================================
-        // RETICLE
-        // ==========================================
+        // ----------------------------------------------
+        // Reticle
+        // ----------------------------------------------
 
         const reticleGeometry =
           new THREE.RingGeometry(
             0.08,
-            0.1,
+            0.105,
             32
           );
 
@@ -150,6 +172,9 @@ export default function ARViewer({
           new THREE.MeshBasicMaterial({
             color: 0xffffff,
             side: THREE.DoubleSide,
+            transparent: true,
+            opacity: 0.95,
+            depthTest: false,
           });
 
         reticle = new THREE.Mesh(
@@ -157,36 +182,28 @@ export default function ARViewer({
           reticleMaterial
         );
 
-        reticle.rotation.x =
-          -Math.PI / 2;
-
         reticle.matrixAutoUpdate = false;
-
         reticle.visible = false;
+        reticle.renderOrder = 999;
 
         scene.add(reticle);
 
-        // ==========================================
-        // LOAD ELEVATOR GLB
-        // ==========================================
+        // ----------------------------------------------
+        // Load Elevator GLB
+        // ----------------------------------------------
 
         const loader = new GLTFLoader();
 
         loader.load(
           modelUrl,
-
           (gltf) => {
-            if (!scene) {
-              return;
-            }
+            if (cancelled) return;
 
             elevator = gltf.scene;
 
-            elevator.visible = false;
-
-            // --------------------------------------
-            // Get original model size
-            // --------------------------------------
+            // ------------------------------------------
+            // Find original dimensions
+            // ------------------------------------------
 
             const originalBox =
               new THREE.Box3().setFromObject(
@@ -205,9 +222,12 @@ export default function ARViewer({
               originalSize
             );
 
-            // --------------------------------------
-            // Target AR height
-            // --------------------------------------
+            // ------------------------------------------
+            // AR target height
+            //
+            // WebXR uses meters.
+            // Elevator target = 2.5 meters.
+            // ------------------------------------------
 
             const targetHeight = 2.5;
 
@@ -221,9 +241,9 @@ export default function ARViewer({
               );
             }
 
-            // --------------------------------------
-            // Center model
-            // --------------------------------------
+            // ------------------------------------------
+            // Recalculate bounding box
+            // ------------------------------------------
 
             const scaledBox =
               new THREE.Box3().setFromObject(
@@ -235,16 +255,14 @@ export default function ARViewer({
 
             scaledBox.getCenter(center);
 
+            // Center X/Z
             elevator.position.x -=
               center.x;
 
             elevator.position.z -=
               center.z;
 
-            // --------------------------------------
             // Put bottom on floor
-            // --------------------------------------
-
             const finalBox =
               new THREE.Box3().setFromObject(
                 elevator
@@ -253,50 +271,54 @@ export default function ARViewer({
             elevator.position.y -=
               finalBox.min.y;
 
-            scene.add(elevator);
+            // ------------------------------------------
+            // Initially hidden
+            // ------------------------------------------
+
+            elevator.visible = false;
+
+            scene?.add(elevator);
 
             console.log(
-              "Elevator model loaded successfully"
+              "Elevator model loaded"
             );
           },
-
           undefined,
-
-          (loadError) => {
+          (error) => {
             console.error(
               "GLB loading error:",
-              loadError
+              error
             );
 
             setError(
-              "Failed to load the elevator 3D model."
+              "Unable to load Elevator_Master.glb"
             );
           }
         );
 
-        // ==========================================
-        // AR BUTTON
-        // ==========================================
+        // ----------------------------------------------
+        // AR Button
+        // ----------------------------------------------
 
-        const arButton =
-          ARButton.createButton(
-            renderer,
-            {
-              requiredFeatures: [
-                "hit-test",
-              ],
+        arButton = ARButton.createButton(
+          renderer,
+          {
+            requiredFeatures: [
+              "hit-test",
+            ],
+            optionalFeatures: [
+              "local-floor",
+              "dom-overlay",
+            ],
+          }
+        );
 
-              optionalFeatures: [
-                "dom-overlay",
-              ],
-            }
-          );
-
+        // Style AR button
         arButton.style.position =
           "absolute";
 
         arButton.style.bottom =
-          "30px";
+          "24px";
 
         arButton.style.left =
           "50%";
@@ -305,82 +327,89 @@ export default function ARViewer({
           "translateX(-50%)";
 
         arButton.style.zIndex =
-          "100";
+          "1000";
+
+        arButton.style.padding =
+          "14px 28px";
+
+        arButton.style.border =
+          "1px solid white";
+
+        arButton.style.borderRadius =
+          "8px";
+
+        arButton.style.background =
+          "rgba(0,0,0,0.75)";
+
+        arButton.style.color =
+          "white";
+
+        arButton.style.fontSize =
+          "14px";
+
+        arButton.style.fontFamily =
+          "Arial, sans-serif";
 
         container.appendChild(
           arButton
         );
 
-        // ==========================================
-        // AR SESSION START
-        // ==========================================
+        // ----------------------------------------------
+        // XR SESSION START
+        // ----------------------------------------------
 
         renderer.xr.addEventListener(
           "sessionstart",
           async () => {
-            if (!renderer) {
-              return;
-            }
+            console.log(
+              "XR session started"
+            );
 
             xrSession =
-              renderer.xr.getSession();
+              renderer?.xr.getSession() ??
+              null;
 
             if (!xrSession) {
-              return;
-            }
-
-            // --------------------------------------
-            // Check hit test API
-            // --------------------------------------
-
-            if (
-              !xrSession.requestHitTestSource
-            ) {
-              setError(
-                "Hit test is not supported on this device."
+              console.error(
+                "XR session not available"
               );
-
               return;
             }
 
             try {
-              // ------------------------------------
+              // ----------------------------------------
               // Viewer reference space
-              // ------------------------------------
+              // ----------------------------------------
 
               viewerSpace =
                 await xrSession.requestReferenceSpace(
                   "viewer"
                 );
 
-              // ------------------------------------
-              // Request hit test source
-              // ------------------------------------
+              console.log(
+                "Viewer reference space created"
+              );
 
-              const source =
+              // ----------------------------------------
+              // Hit test source
+              // ----------------------------------------
+
+              hitTestSource =
                 await xrSession.requestHitTestSource(
                   {
                     space: viewerSpace,
                   }
                 );
 
-              // ------------------------------------
-              // TypeScript safety check
-              // ------------------------------------
-
-              if (!source) {
-                setError(
-                  "Unable to create AR hit test source."
+              if (hitTestSource) {
+                console.log(
+                  "Hit test source created"
                 );
 
-                return;
+                setMessage(
+                  "Move your phone slowly over the floor."
+                );
               }
-
-              hitTestSource = source;
-
-              console.log(
-                "AR hit test started"
-              );
             } catch (error) {
               console.error(
                 "Hit test initialization failed:",
@@ -388,51 +417,53 @@ export default function ARViewer({
               );
 
               setError(
-                "Surface detection is not available."
+                "Unable to start surface detection."
               );
             }
           }
         );
 
-        // ==========================================
-        // AR SESSION END
-        // ==========================================
+        // ----------------------------------------------
+        // XR SESSION END
+        // ----------------------------------------------
 
-        handleSessionEnd = () => {
-          hitTestSource?.cancel();
+        const handleSessionEnd =
+          () => {
+            console.log(
+              "XR session ended"
+            );
 
-          hitTestSource = null;
+            hitTestSource?.cancel();
 
-          viewerSpace = null;
+            hitTestSource = null;
 
-          xrSession = null;
+            viewerSpace = null;
 
-          if (elevator) {
-            elevator.visible = false;
-          }
+            xrSession = null;
 
-          if (reticle) {
-            reticle.visible = false;
-          }
+            if (elevator) {
+              elevator.visible =
+                false;
+            }
 
-          setPlaced(false);
-        };
+            setIsPlaced(false);
+
+            setMessage(
+              "Move your phone slowly to detect the floor."
+            );
+          };
 
         renderer.xr.addEventListener(
           "sessionend",
           handleSessionEnd
         );
 
-        // ==========================================
+        // ----------------------------------------------
         // TAP TO PLACE
-        // ==========================================
+        // ----------------------------------------------
 
-        handleTap = () => {
-          if (!renderer) {
-            return;
-          }
-
-          if (!renderer.xr.isPresenting) {
+        const handleTap = () => {
+          if (!renderer?.xr.isPresenting) {
             return;
           }
 
@@ -441,30 +472,28 @@ export default function ARViewer({
           }
 
           if (!reticle.visible) {
+            console.log(
+              "No surface detected yet"
+            );
             return;
           }
 
           if (!elevator) {
+            console.log(
+              "Elevator model not loaded yet"
+            );
             return;
           }
 
-          // ----------------------------------------
-          // Position
-          // ----------------------------------------
+          // ------------------------------------------
+          // Extract position from reticle matrix
+          // ------------------------------------------
 
           const position =
             new THREE.Vector3();
 
-          // ----------------------------------------
-          // Rotation
-          // ----------------------------------------
-
           const quaternion =
             new THREE.Quaternion();
-
-          // ----------------------------------------
-          // Scale
-          // ----------------------------------------
 
           const scale =
             new THREE.Vector3();
@@ -475,24 +504,31 @@ export default function ARViewer({
             scale
           );
 
-          // ----------------------------------------
+          // ------------------------------------------
           // Place elevator
-          // ----------------------------------------
+          // ------------------------------------------
 
           elevator.position.copy(
             position
           );
 
-          elevator.quaternion.copy(
-            quaternion
+          // Keep elevator upright
+          elevator.rotation.set(
+            0,
+            0,
+            0
           );
 
           elevator.visible = true;
 
-          setPlaced(true);
+          setIsPlaced(true);
+
+          setMessage(
+            "Elevator placed. Move your phone to view it."
+          );
 
           console.log(
-            "Elevator placed:",
+            "Elevator placed at:",
             position
           );
         };
@@ -502,64 +538,46 @@ export default function ARViewer({
           handleTap
         );
 
-        // ==========================================
-        // RESIZE
-        // ==========================================
-
-        handleResize = () => {
-          if (!renderer || !camera) {
-            return;
-          }
-
-          camera.aspect =
-            window.innerWidth /
-            window.innerHeight;
-
-          camera.updateProjectionMatrix();
-
-          renderer.setSize(
-            window.innerWidth,
-            window.innerHeight
-          );
-        };
-
-        window.addEventListener(
-          "resize",
-          handleResize
-        );
-
-        // ==========================================
-        // AR RENDER LOOP
-        // ==========================================
+        // ----------------------------------------------
+        // Animation Loop
+        // ----------------------------------------------
 
         renderer.setAnimationLoop(
           (
             _time: number,
             frame?: XRFrame
           ) => {
-            // --------------------------------------
-            // Hit test
-            // --------------------------------------
+            if (
+              !renderer ||
+              !scene ||
+              !camera
+            ) {
+              return;
+            }
+
+            // ------------------------------------------
+            // XR Hit Test
+            // ------------------------------------------
 
             if (
               frame &&
               hitTestSource &&
-              renderer
+              renderer.xr.isPresenting
             ) {
               const referenceSpace =
                 renderer.xr.getReferenceSpace();
 
               if (referenceSpace) {
-                const hitTestResults =
+                const results =
                   frame.getHitTestResults(
                     hitTestSource
                   );
 
                 if (
-                  hitTestResults.length > 0
+                  results.length > 0
                 ) {
                   const hit =
-                    hitTestResults[0];
+                    results[0];
 
                   const pose =
                     hit.getPose(
@@ -576,37 +594,189 @@ export default function ARViewer({
                     reticle.matrix.fromArray(
                       pose.transform.matrix
                     );
+
+                    console.log(
+                      "Surface detected"
+                    );
                   }
-                } else if (reticle) {
-                  reticle.visible =
-                    false;
+                } else {
+                  if (reticle) {
+                    reticle.visible =
+                      false;
+                  }
                 }
               }
             }
 
-            // --------------------------------------
+            // ------------------------------------------
             // Render
-            // --------------------------------------
+            // ------------------------------------------
 
-            if (
-              scene &&
-              camera &&
-              renderer
-            ) {
-              renderer.render(
-                scene,
-                camera
-              );
-            }
+            renderer.render(
+              scene,
+              camera
+            );
           }
         );
+
+        // ----------------------------------------------
+        // Resize
+        // ----------------------------------------------
+
+        const handleResize =
+          () => {
+            if (
+              !renderer ||
+              !camera
+            ) {
+              return;
+            }
+
+            const width =
+              window.innerWidth;
+
+            const height =
+              window.innerHeight;
+
+            camera.aspect =
+              width / height;
+
+            camera.updateProjectionMatrix();
+
+            renderer.setSize(
+              width,
+              height
+            );
+          };
+
+        window.addEventListener(
+          "resize",
+          handleResize
+        );
+
+        // ----------------------------------------------
+        // Cleanup
+        // ----------------------------------------------
+
+        return () => {
+          cancelled = true;
+
+          window.removeEventListener(
+            "resize",
+            handleResize
+          );
+
+          renderer?.domElement.removeEventListener(
+            "click",
+            handleTap
+          );
+
+          renderer?.removeEventListener?.(
+            "sessionend",
+            handleSessionEnd
+          );
+
+          hitTestSource?.cancel();
+
+          renderer?.setAnimationLoop(
+            null
+          );
+
+          if (
+            xrSession &&
+            renderer?.xr.isPresenting
+          ) {
+            xrSession.end().catch(
+              () => {}
+            );
+          }
+
+          // Dispose model
+          if (elevator) {
+            elevator.traverse(
+              (object) => {
+                const mesh =
+                  object as THREE.Mesh;
+
+                if (
+                  mesh.geometry
+                ) {
+                  mesh.geometry.dispose();
+                }
+
+                if (
+                  mesh.material
+                ) {
+                  const materials =
+                    Array.isArray(
+                      mesh.material
+                    )
+                      ? mesh.material
+                      : [mesh.material];
+
+                  materials.forEach(
+                    (material) => {
+                      material.dispose();
+
+                      if (
+                        material.map
+                      ) {
+                        material.map.dispose();
+                      }
+                    }
+                  );
+                }
+              }
+            );
+          }
+
+          // Dispose reticle
+          if (reticle) {
+            reticle.geometry.dispose();
+
+            if (
+              Array.isArray(
+                reticle.material
+              )
+            ) {
+              reticle.material.forEach(
+                (material) =>
+                  material.dispose()
+              );
+            } else {
+              reticle.material.dispose();
+            }
+          }
+
+          // Dispose renderer
+          renderer?.dispose();
+
+          // Remove DOM
+          if (
+            renderer?.domElement.parentElement ===
+            container
+          ) {
+            container.removeChild(
+              renderer.domElement
+            );
+          }
+
+          if (
+            arButton?.parentElement ===
+            container
+          ) {
+            container.removeChild(
+              arButton
+            );
+          }
+        };
       } catch (error) {
         console.error(
           "AR initialization error:",
           error
         );
 
-        setSupported(false);
+        setIsSupported(false);
 
         setError(
           "Unable to initialize AR."
@@ -614,116 +784,42 @@ export default function ARViewer({
       }
     };
 
-    // ==========================================
-    // START AR
-    // ==========================================
+    let cleanup:
+      | (() => void)
+      | undefined;
 
-    initAR();
-
-    // ==========================================
-    // CLEANUP
-    // ==========================================
+    initialize().then(
+      (result) => {
+        cleanup = result;
+      }
+    );
 
     return () => {
-      // Resize listener
-      if (handleResize) {
-        window.removeEventListener(
-          "resize",
-          handleResize
-        );
+      cancelled = true;
+
+      if (cleanup) {
+        cleanup();
       }
-
-      // Tap listener
-      if (
-        renderer &&
-        handleTap
-      ) {
-        renderer.domElement.removeEventListener(
-          "click",
-          handleTap
-        );
-      }
-
-      // Session listener
-      if (
-        renderer &&
-        handleSessionEnd
-      ) {
-        renderer.xr.removeEventListener(
-          "sessionend",
-          handleSessionEnd
-        );
-      }
-
-      // Cancel hit test
-      hitTestSource?.cancel();
-
-      hitTestSource = null;
-
-      // End AR session
-      if (
-        xrSession &&
-        renderer?.xr.isPresenting
-      ) {
-        xrSession.end();
-      }
-
-      // Stop animation
-      renderer?.setAnimationLoop(null);
-
-      // Dispose Three.js objects
-      if (scene) {
-        scene.traverse((object) => {
-          const mesh =
-            object as THREE.Mesh;
-
-          if (mesh.geometry) {
-            mesh.geometry.dispose();
-          }
-
-          if (mesh.material) {
-            const materials =
-              Array.isArray(mesh.material)
-                ? mesh.material
-                : [mesh.material];
-
-            materials.forEach(
-              (material) => {
-                material.dispose();
-              }
-            );
-          }
-        });
-      }
-
-      // Dispose renderer
-      renderer?.dispose();
-
-      // Remove canvas
-      if (
-        renderer?.domElement.parentElement ===
-        container
-      ) {
-        container.removeChild(
-          renderer.domElement
-        );
-      }
-
-      // Remove AR button
-      const buttons =
-        container.querySelectorAll(
-          "button"
-        );
-
-      buttons.forEach((button) => {
-        button.remove();
-      });
     };
   }, [modelUrl]);
 
-  // ==========================================
+  // --------------------------------------------------
+  // Exit AR
+  // --------------------------------------------------
+
+  const handleExit = async () => {
+    try {
+      // The XR session is owned by Three.js.
+      // The ARButton handles its own session.
+      onExit?.();
+    } catch {
+      onExit?.();
+    }
+  };
+
+  // --------------------------------------------------
   // UI
-  // ==========================================
+  // --------------------------------------------------
 
   return (
     <div
@@ -736,80 +832,75 @@ export default function ARViewer({
         overflow: "hidden",
         background: "transparent",
         zIndex: 9999,
+        touchAction: "none",
       }}
     >
-      {/* ========================================
-          INSTRUCTIONS
-      ======================================== */}
+      {/* ----------------------------------------- */}
+      {/* Top instruction */}
+      {/* ----------------------------------------- */}
 
-      {supported === true &&
-        !placed &&
-        !error && (
+      {isSupported &&
+        !isPlaced && (
           <div
             style={{
               position: "absolute",
               top: 20,
-              left: "50%",
-              transform:
-                "translateX(-50%)",
-              zIndex: 200,
-              width:
-                "calc(100% - 40px)",
-              maxWidth: 400,
+              left: 20,
+              right: 20,
+              zIndex: 1100,
               padding:
-                "12px 18px",
-              borderRadius: 12,
+                "16px 18px",
+              borderRadius: 16,
               background:
-                "rgba(0,0,0,0.75)",
+                "rgba(0,0,0,0.78)",
               color: "#fff",
-              fontSize: 14,
-              lineHeight: 1.4,
               textAlign: "center",
-              pointerEvents:
-                "none",
+              fontSize: 14,
+              lineHeight: 1.5,
+              pointerEvents: "none",
+              backdropFilter:
+                "blur(8px)",
             }}
           >
             Move your phone slowly
-            to detect the floor.
-            Then tap the white
-            circle to place the
-            elevator.
+            over the floor until the
+            white circle appears.
+            <br />
+            Then tap the circle to
+            place the elevator.
           </div>
         )}
 
-      {/* ========================================
-          PLACED MESSAGE
-      ======================================== */}
+      {/* ----------------------------------------- */}
+      {/* Placed message */}
+      {/* ----------------------------------------- */}
 
-      {placed && (
+      {isPlaced && (
         <div
           style={{
             position: "absolute",
             top: 20,
-            left: "50%",
-            transform:
-              "translateX(-50%)",
-            zIndex: 200,
+            left: 20,
+            right: 20,
+            zIndex: 1100,
             padding:
-              "10px 16px",
-            borderRadius: 10,
+              "12px 18px",
+            borderRadius: 14,
             background:
-              "rgba(0,0,0,0.75)",
+              "rgba(0,0,0,0.78)",
             color: "#fff",
-            fontSize: 13,
-            pointerEvents:
-              "none",
-            whiteSpace:
-              "nowrap",
+            textAlign: "center",
+            fontSize: 14,
+            pointerEvents: "none",
           }}
         >
           Elevator placed successfully
         </div>
       )}
 
-      {/* ========================================
-          ERROR
-      ======================================== */}
+      {/* ----------------------------------------- */}
+      {/* Error */}
+      {/* ----------------------------------------- */}
 
       {error && (
         <div
@@ -819,36 +910,77 @@ export default function ARViewer({
             left: "50%",
             transform:
               "translate(-50%, -50%)",
-            zIndex: 300,
-            width:
-              "min(90%, 380px)",
-            padding: 22,
+            width: "calc(100% - 40px)",
+            maxWidth: 380,
+            zIndex: 2000,
+            padding: 24,
             borderRadius: 16,
             background:
               "rgba(0,0,0,0.92)",
             color: "#fff",
             textAlign: "center",
+            fontSize: 14,
             lineHeight: 1.5,
           }}
         >
-          <div
-            style={{
-              fontSize: 16,
-              fontWeight: 600,
-              marginBottom: 8,
-            }}
-          >
-            AR Not Available
-          </div>
+          {error}
+        </div>
+      )}
 
-          <div
-            style={{
-              fontSize: 13,
-              opacity: 0.8,
-            }}
-          >
-            {error}
-          </div>
+      {/* ----------------------------------------- */}
+      {/* Exit button */}
+      {/* ----------------------------------------- */}
+
+      <button
+        type="button"
+        onClick={handleExit}
+        style={{
+          position: "absolute",
+          top: 20,
+          right: 20,
+          zIndex: 1500,
+          padding:
+            "10px 16px",
+          borderRadius: 10,
+          border:
+            "1px solid rgba(255,255,255,0.5)",
+          background:
+            "rgba(0,0,0,0.7)",
+          color: "#fff",
+          fontSize: 12,
+          cursor: "pointer",
+        }}
+      >
+        EXIT
+      </button>
+
+      {/* ----------------------------------------- */}
+      {/* Status */}
+      {/* ----------------------------------------- */}
+
+      {!error && (
+        <div
+          style={{
+            position: "absolute",
+            bottom: 90,
+            left: "50%",
+            transform:
+              "translateX(-50%)",
+            zIndex: 1050,
+            width: "calc(100% - 40px)",
+            maxWidth: 360,
+            padding:
+              "10px 14px",
+            borderRadius: 12,
+            background:
+              "rgba(0,0,0,0.65)",
+            color: "#fff",
+            textAlign: "center",
+            fontSize: 12,
+            pointerEvents: "none",
+          }}
+        >
+          {message}
         </div>
       )}
     </div>
